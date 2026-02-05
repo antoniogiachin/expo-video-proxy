@@ -91,6 +91,7 @@ export default class VideoPlayerWeb
   keepScreenOnWhilePlaying: boolean = false; // Not supported on web. Dummy to match the interface
   seekTolerance: SeekTolerance = {} as SeekTolerance; // Not supported on web. Dummy to match the interface.
   scrubbingModeOptions: ScrubbingModeOptions = {} as ScrubbingModeOptions; // Not supported on web. Dummy to match the interface.
+  dynamicRequestHeaders: Record<string, string> = {}; // Not supported on web. Dummy to match the interface.
 
   set muted(value: boolean) {
     this._mountedVideos.forEach((video) => {

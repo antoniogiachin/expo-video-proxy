@@ -11,6 +11,16 @@ type FullscreenChangeListeners = {
   msListener: () => void;
 };
 
+type VideoViewHandle = {
+  enterFullscreen: () => Promise<void>;
+  exitFullscreen: () => Promise<void>;
+  startPictureInPicture: () => Promise<void>;
+  stopPictureInPicture: () => Promise<void>;
+  nativeRef: React.RefObject<HTMLVideoElement | null>;
+};
+
+type VideoViewWebProps = { player?: VideoPlayer } & VideoViewProps;
+
 function createAudioContext(): AudioContext | null {
   return typeof window !== 'undefined' ? new window.AudioContext() : null;
 }
@@ -35,7 +45,7 @@ export function isPictureInPictureSupported(): boolean {
   return typeof document === 'object' && typeof document.exitPictureInPicture === 'function';
 }
 
-export const VideoView = forwardRef((props: { player?: VideoPlayer } & VideoViewProps, ref) => {
+export const VideoView = forwardRef<VideoViewHandle, VideoViewWebProps>((props, ref) => {
   const videoRef = useRef<null | HTMLVideoElement>(null);
   const mediaNodeRef = useRef<null | MediaElementAudioSourceNode>(null);
   const hasToSetupAudioContext = useRef(false);
@@ -273,7 +283,7 @@ export const VideoView = forwardRef((props: { player?: VideoPlayer } & VideoView
       onVolumeChange={() => {
         maybeSetupAudioContext();
       }}
-      ref={(newRef) => {
+      ref={(newRef: HTMLVideoElement | null) => {
         // This is called with a null value before `player.unmountVideoView` is called,
         // we can't assign null to videoRef if we want to unmount it from the player.
         if (newRef && !newRef.isEqualNode(videoRef.current)) {

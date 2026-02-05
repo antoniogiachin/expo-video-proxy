@@ -61,6 +61,7 @@ export default class VideoPlayerWeb extends globalThis.expo.SharedObject {
     keepScreenOnWhilePlaying = false; // Not supported on web. Dummy to match the interface
     seekTolerance = {}; // Not supported on web. Dummy to match the interface.
     scrubbingModeOptions = {}; // Not supported on web. Dummy to match the interface.
+    dynamicRequestHeaders = {}; // Not supported on web. Dummy to match the interface.
     set muted(value) {
         this._mountedVideos.forEach((video) => {
             video.muted = value;

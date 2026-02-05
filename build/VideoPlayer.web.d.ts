@@ -38,6 +38,7 @@ export default class VideoPlayerWeb extends globalThis.expo.SharedObject<VideoPl
     keepScreenOnWhilePlaying: boolean;
     seekTolerance: SeekTolerance;
     scrubbingModeOptions: ScrubbingModeOptions;
+    dynamicRequestHeaders: Record<string, string>;
     set muted(value: boolean);
     get muted(): boolean;
     set playbackRate(value: number);

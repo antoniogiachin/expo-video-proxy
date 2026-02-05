@@ -6,5 +6,5 @@ import { VideoAirPlayButtonProps } from './VideoAirPlayButton.types';
  * > When using this view, make sure that the [`allowsExternalPlayback`](#allowsexternalplayback) player property is set to `true`.
  * @platform ios
  */
-export default function VideoAirPlayButton(props: VideoAirPlayButtonProps): any;
+export default function VideoAirPlayButton(props: VideoAirPlayButtonProps): import("react").JSX.Element;
 //# sourceMappingURL=VideoAirPlayButton.d.ts.map
