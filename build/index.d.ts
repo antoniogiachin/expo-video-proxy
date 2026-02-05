@@ -5,6 +5,8 @@ export type { VideoContentFit, VideoViewProps, SurfaceType } from './VideoView.t
 export type { VideoThumbnail } from './VideoThumbnail';
 export { createVideoPlayer } from './VideoPlayer';
 export { default as VideoAirPlayButton } from './VideoAirPlayButton';
+export { CMCDProxy, formatCmcdHeaders, generateSessionId } from './CMCDProxy';
+export type { CmcdData } from './CMCDProxy';
 export type * from './VideoPlayer.types';
 export type * from './VideoPlayerEvents.types';
 export type * from './VideoAirPlayButton.types';

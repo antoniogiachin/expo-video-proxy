@@ -219,6 +219,14 @@ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
      */
     scrubbingModeOptions: ScrubbingModeOptions;
     /**
+     * Headers to inject dynamically into all segment/chunk HTTP requests.
+     * Can be updated at any time without reloading the source.
+     * Requires `enableDynamicHeaders: true` in [`VideoSource`](#videosource).
+     * @platform android
+     * @platform ios
+     */
+    dynamicRequestHeaders: Record<string, string>;
+    /**
      * Initializes a new video player instance with the given source.
      *
      * @param source The source of the video to be played.
@@ -342,6 +350,15 @@ export type VideoSourceObject = {
      * @platform ios
      */
     contentType?: ContentType;
+    /**
+     * Enables dynamic header injection via local HTTP proxy.
+     * When enabled, all HTTP requests (manifest + chunks) will pass through
+     * a local proxy that injects `dynamicRequestHeaders` from the VideoPlayer.
+     * @default false
+     * @platform android
+     * @platform ios
+     */
+    enableDynamicHeaders?: boolean;
 };
 /**
  * Contains information about any errors that the player encountered during the playback

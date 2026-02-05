@@ -24,6 +24,6 @@ export declare class VideoThumbnail extends SharedRef<'image'> {
      */
     actualTime: number;
 }
-declare const _default: typeof VideoThumbnail;
+declare const _default: any;
 export default _default;
 //# sourceMappingURL=VideoThumbnail.d.ts.map

@@ -15,7 +15,7 @@ export declare class VideoView extends PureComponent<VideoViewProps> {
     /**
      * A reference to the underlying native view. On web it is a reference to the HTMLVideoElement.
      */
-    nativeRef: import("react").RefObject<any>;
+    nativeRef: any;
     /**
      * Enters fullscreen mode.
      */
