@@ -189,19 +189,29 @@ internal class CMCDProxy {
 
       response.use { resp ->
         val contentType = resp.header("Content-Type") ?: ""
+        // Check URL path (without query params) for .m3u8 extension
+        val urlPath = try {
+          URI(originalUrl).path.lowercase()
+        } catch (e: Exception) {
+          originalUrl.lowercase()
+        }
         val isManifest = contentType.contains("mpegurl", ignoreCase = true) ||
           contentType.contains("x-mpegURL", ignoreCase = true) ||
-          originalUrl.lowercase().endsWith(".m3u8")
+          urlPath.endsWith(".m3u8")
 
         var bodyBytes = resp.body?.bytes() ?: ByteArray(0)
 
+        // Build headers map, ensuring Content-Type is set correctly for HLS
+        val headersMap = resp.headers.toMap().toMutableMap()
         if (isManifest) {
           val manifestContent = String(bodyBytes, Charsets.UTF_8)
           val rewrittenContent = rewriteHLSManifest(manifestContent, originalUrl)
           bodyBytes = rewrittenContent.toByteArray(Charsets.UTF_8)
+          // Ensure correct Content-Type for HLS
+          headersMap["Content-Type"] = "application/vnd.apple.mpegurl"
         }
 
-        sendResponse(client, resp.code, resp.headers.toMap(), bodyBytes)
+        sendResponse(client, resp.code, headersMap, bodyBytes)
       }
     } catch (e: Exception) {
       println("[CMCDProxy] Fetch error for $originalUrl: ${e.message}")

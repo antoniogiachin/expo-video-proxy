@@ -5,6 +5,10 @@ import Network
 
 /// Local HTTP proxy server for injecting dynamic headers into video segment requests.
 /// Uses Network.framework's NWListener for efficient TCP handling.
+///
+/// The proxy URL structure is: `http://localhost:PORT/ORIGINAL_URL`
+/// This allows AVPlayer to resolve relative URLs in manifests automatically,
+/// so no manifest parsing/rewriting is needed for any format (HLS, DASH, SmoothStreaming).
 internal final class CMCDProxy {
   static let shared = CMCDProxy()
 
@@ -36,6 +40,10 @@ internal final class CMCDProxy {
   }
 
   var isReady: Bool { port > 0 }
+
+  private var proxyBaseUrl: String {
+    "http://localhost:\(port)/"
+  }
 
   private init() {}
 
@@ -104,12 +112,18 @@ internal final class CMCDProxy {
   }
 
   /// Creates a proxy URL for the given original URL.
+  /// Format: http://localhost:PORT/ORIGINAL_URL
   func createProxyUrl(for originalUrl: URL) -> URL? {
     guard port > 0 else { return nil }
-    guard let encoded = originalUrl.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-      return nil
-    }
-    return URL(string: "http://127.0.0.1:\(port)/proxy?url=\(encoded)")
+    return URL(string: proxyBaseUrl + originalUrl.absoluteString)
+  }
+
+  /// Extracts the original URL from a proxy URL.
+  func unproxiedUrl(_ url: URL) -> URL? {
+    let urlString = url.absoluteString
+    guard urlString.hasPrefix(proxyBaseUrl) else { return nil }
+    let originalUrlString = String(urlString.dropFirst(proxyBaseUrl.count))
+    return URL(string: originalUrlString)
   }
 
   // MARK: - Connection Handling
@@ -189,22 +203,38 @@ internal final class CMCDProxy {
       return
     }
 
-    // Extract original URL from /proxy?url=ENCODED_URL
-    guard path.hasPrefix("/proxy?url="),
-          let urlStart = path.range(of: "/proxy?url=")?.upperBound,
-          let encodedUrl = String(path[urlStart...]).removingPercentEncoding,
-          let originalUrl = URL(string: encodedUrl) else {
-      sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid proxy URL")
+    // Parse original headers from the request
+    var originalHeaders: [String: String] = [:]
+    for line in lines.dropFirst() {
+      if line.isEmpty { break }
+      if let colonIndex = line.firstIndex(of: ":") {
+        let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+        let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+        if key.lowercased() != "host" {
+          originalHeaders[key] = value
+        }
+      }
+    }
+
+    // Extract original URL from path: /https://example.com/video.m3u8 → https://example.com/video.m3u8
+    let originalUrlString = String(path.dropFirst()) // Remove leading "/"
+    guard let originalUrl = URL(string: originalUrlString) else {
+      sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid URL: \(originalUrlString)")
       return
     }
 
     // Fetch the original URL with injected headers
-    fetchAndProxy(originalUrl: originalUrl, connection: connection)
+    fetchAndProxy(originalUrl: originalUrl, originalHeaders: originalHeaders, connection: connection)
   }
 
-  private func fetchAndProxy(originalUrl: URL, connection: NWConnection) {
+  private func fetchAndProxy(originalUrl: URL, originalHeaders: [String: String], connection: NWConnection) {
     var request = URLRequest(url: originalUrl)
     request.httpMethod = "GET"
+
+    // Copy original headers (except Host)
+    for (key, value) in originalHeaders {
+      request.setValue(value, forHTTPHeaderField: key)
+    }
 
     // Add static headers
     for (key, value) in staticHeaders {
@@ -219,7 +249,11 @@ internal final class CMCDProxy {
       }
     }
 
-    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+    // Use a session that doesn't follow redirects automatically
+    let config = URLSessionConfiguration.default
+    let session = URLSession(configuration: config, delegate: NoRedirectDelegate.shared, delegateQueue: nil)
+
+    let task = session.dataTask(with: request) { [weak self] data, response, error in
       guard let self = self else { return }
 
       if let error = error {
@@ -227,119 +261,47 @@ internal final class CMCDProxy {
         return
       }
 
-      guard let httpResponse = response as? HTTPURLResponse, let data = data else {
+      guard let httpResponse = response as? HTTPURLResponse else {
         self.sendErrorResponse(connection: connection, statusCode: 502, message: "Invalid upstream response")
         return
       }
 
-      // Check if this is an HLS manifest that needs URL rewriting
-      let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
-      let isManifest = contentType.contains("mpegurl") ||
-                       contentType.contains("x-mpegURL") ||
-                       originalUrl.pathExtension.lowercased() == "m3u8"
+      let statusCode = httpResponse.statusCode
 
-      var responseData = data
-      if isManifest {
-        responseData = self.rewriteHLSManifest(data, baseUrl: originalUrl)
+      // Handle redirects - rewrite Location header to go through proxy
+      if statusCode == 301 || statusCode == 302 || statusCode == 307 || statusCode == 308 {
+        if let location = httpResponse.value(forHTTPHeaderField: "Location"),
+           let redirectUrl = URL(string: location, relativeTo: originalUrl) ?? URL(string: location),
+           let proxiedRedirectUrl = self.createProxyUrl(for: redirectUrl) {
+          self.sendRedirectResponse(connection: connection, statusCode: statusCode, location: proxiedRedirectUrl.absoluteString)
+          return
+        }
       }
+
+      // Return the response as-is (no manifest rewriting needed!)
+      let responseData = data ?? Data()
+      let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")
 
       self.sendResponse(
         connection: connection,
-        statusCode: httpResponse.statusCode,
-        headers: httpResponse.allHeaderFields as? [String: String] ?? [:],
-        data: responseData,
-        isManifest: isManifest
+        statusCode: statusCode,
+        contentType: contentType,
+        data: responseData
       )
     }
     task.resume()
   }
 
-  private func rewriteHLSManifest(_ data: Data, baseUrl: URL) -> Data {
-    guard let content = String(data: data, encoding: .utf8) else {
-      return data
-    }
-
-    var rewritten = ""
-    let lines = content.components(separatedBy: "\n")
-
-    for line in lines {
-      var newLine = line
-
-      // Rewrite URI attributes in tags like #EXT-X-KEY, #EXT-X-MAP, etc.
-      if line.contains("URI=\"") {
-        newLine = rewriteURIAttributes(in: line, baseUrl: baseUrl)
-      }
-      // Rewrite segment/playlist URLs (lines that don't start with #)
-      else if !line.hasPrefix("#") && !line.trimmingCharacters(in: .whitespaces).isEmpty {
-        if let segmentUrl = resolveUrl(line.trimmingCharacters(in: .whitespaces), relativeTo: baseUrl),
-           let proxyUrl = createProxyUrl(for: segmentUrl) {
-          newLine = proxyUrl.absoluteString
-        }
-      }
-
-      rewritten += newLine + "\n"
-    }
-
-    return rewritten.data(using: .utf8) ?? data
-  }
-
-  private func rewriteURIAttributes(in line: String, baseUrl: URL) -> String {
-    // Match URI="..." pattern
-    let pattern = #"URI="([^"]*)""#
-    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-      return line
-    }
-
-    var result = line
-    let range = NSRange(line.startIndex..., in: line)
-
-    // Find all URI attributes and rewrite them
-    let matches = regex.matches(in: line, options: [], range: range)
-
-    // Process matches in reverse order to preserve string indices
-    for match in matches.reversed() {
-      guard let uriRange = Range(match.range(at: 1), in: line) else { continue }
-      let uri = String(line[uriRange])
-
-      if let resolvedUrl = resolveUrl(uri, relativeTo: baseUrl),
-         let proxyUrl = createProxyUrl(for: resolvedUrl) {
-        let fullMatchRange = Range(match.range, in: result)!
-        result.replaceSubrange(fullMatchRange, with: "URI=\"\(proxyUrl.absoluteString)\"")
-      }
-    }
-
-    return result
-  }
-
-  private func resolveUrl(_ urlString: String, relativeTo baseUrl: URL) -> URL? {
-    // If it's already an absolute URL
-    if urlString.hasPrefix("http://") || urlString.hasPrefix("https://") {
-      return URL(string: urlString)
-    }
-
-    // Resolve relative URL
-    return URL(string: urlString, relativeTo: baseUrl)?.absoluteURL
-  }
-
   // MARK: - Response Sending
 
-  private func sendResponse(connection: NWConnection, statusCode: Int, headers: [String: String], data: Data, isManifest: Bool) {
+  private func sendResponse(connection: NWConnection, statusCode: Int, contentType: String?, data: Data) {
     var responseHeaders = "HTTP/1.1 \(statusCode) \(httpStatusMessage(statusCode))\r\n"
-
-    // Add CORS headers
     responseHeaders += "Access-Control-Allow-Origin: *\r\n"
 
-    // Forward relevant headers
-    for (key, value) in headers {
-      let lowerKey = key.lowercased()
-      // Skip headers that might cause issues
-      if lowerKey == "content-encoding" || lowerKey == "transfer-encoding" || lowerKey == "content-length" {
-        continue
-      }
-      responseHeaders += "\(key): \(value)\r\n"
+    if let contentType = contentType {
+      responseHeaders += "Content-Type: \(contentType)\r\n"
     }
 
-    // Set correct content length
     responseHeaders += "Content-Length: \(data.count)\r\n"
     responseHeaders += "\r\n"
 
@@ -360,14 +322,38 @@ internal final class CMCDProxy {
     })
   }
 
+  private func sendRedirectResponse(connection: NWConnection, statusCode: Int, location: String) {
+    var responseHeaders = "HTTP/1.1 \(statusCode) \(httpStatusMessage(statusCode))\r\n"
+    responseHeaders += "Location: \(location)\r\n"
+    responseHeaders += "Content-Length: 0\r\n"
+    responseHeaders += "\r\n"
+
+    guard let headerData = responseHeaders.data(using: .utf8) else {
+      connection.cancel()
+      return
+    }
+
+    connection.send(content: headerData, completion: .contentProcessed { [weak self] error in
+      if let error = error {
+        print("[CMCDProxy] Send redirect error: \(error)")
+      }
+      connection.cancel()
+      self?.removeConnection(connection)
+    })
+  }
+
   private func sendErrorResponse(connection: NWConnection, statusCode: Int, message: String) {
     let body = message.data(using: .utf8) ?? Data()
-    sendResponse(connection: connection, statusCode: statusCode, headers: ["Content-Type": "text/plain"], data: body, isManifest: false)
+    sendResponse(connection: connection, statusCode: statusCode, contentType: "text/plain", data: body)
   }
 
   private func httpStatusMessage(_ code: Int) -> String {
     switch code {
     case 200: return "OK"
+    case 301: return "Moved Permanently"
+    case 302: return "Found"
+    case 307: return "Temporary Redirect"
+    case 308: return "Permanent Redirect"
     case 400: return "Bad Request"
     case 404: return "Not Found"
     case 405: return "Method Not Allowed"
@@ -375,5 +361,23 @@ internal final class CMCDProxy {
     case 502: return "Bad Gateway"
     default: return "Unknown"
     }
+  }
+}
+
+// MARK: - No Redirect Delegate
+
+/// Delegate that prevents automatic redirect following, so we can handle redirects ourselves
+private class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
+  static let shared = NoRedirectDelegate()
+
+  func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse,
+    newRequest request: URLRequest,
+    completionHandler: @escaping (URLRequest?) -> Void
+  ) {
+    // Don't follow redirects automatically - we'll handle them in the proxy
+    completionHandler(nil)
   }
 }

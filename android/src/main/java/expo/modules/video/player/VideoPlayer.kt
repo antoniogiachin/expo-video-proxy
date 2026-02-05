@@ -47,7 +47,7 @@ import expo.modules.video.records.VideoSource
 import expo.modules.video.utils.MutableWeakReference
 import expo.modules.video.records.VideoTrack
 import expo.modules.video.utils.buildBasicMediaSession
-import expo.modules.video.proxy.CMCDProxyManager
+import expo.modules.video.buildExpoVideoMediaSourceWithDynamicHeaders
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 import java.lang.ref.WeakReference
@@ -405,14 +405,16 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
     availableVideoTracks = listOf()
     currentVideoTrack = null
 
-    var newSource = uncommittedSource
+    val newSource = uncommittedSource
 
-    // Process source for proxy if dynamic headers are enabled
-    if (newSource?.enableDynamicHeaders == true) {
-      newSource = processSourceForProxy(newSource)
+    val mediaSource = if (newSource?.enableDynamicHeaders == true) {
+      // Use dynamic headers data source factory
+      newSource.uri?.let {
+        buildExpoVideoMediaSourceWithDynamicHeaders(context, newSource, this)
+      }
+    } else {
+      newSource?.toMediaSource(context)
     }
-
-    val mediaSource = newSource?.toMediaSource(context)
 
     mediaSource?.let {
       player.setMediaSource(it)
@@ -425,42 +427,6 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
       player.prepare()
       isLoadingNewSource = false
     }
-  }
-
-  /**
-   * Processes the video source for proxy if dynamic headers are enabled.
-   * Returns a new source with proxied URL, or the original source if proxy is not needed/failed.
-   */
-  private fun processSourceForProxy(source: VideoSource): VideoSource {
-    val uri = source.uri ?: return source
-
-    // Start and wait for the proxy to be ready (blocking with timeout)
-    val started = CMCDProxyManager.startBlocking(5000)
-    if (!started) {
-      println("[CMCDProxy] Failed to start proxy. Using original source.")
-      return source
-    }
-
-    // Configure the proxy to use headers from this player
-    CMCDProxyManager.configureForPlayer(this)
-
-    // Create proxy URL
-    val proxyUrl = CMCDProxyManager.createProxyUrl(uri.toString())
-    if (proxyUrl == null) {
-      println("[CMCDProxy] Failed to create proxy URL. Using original source.")
-      return source
-    }
-
-    // Return a new source with the proxied URL
-    return VideoSource(
-      uri = android.net.Uri.parse(proxyUrl),
-      drm = source.drm,
-      metadata = source.metadata,
-      headers = source.headers,
-      useCaching = source.useCaching,
-      contentType = source.contentType,
-      enableDynamicHeaders = false // Disable to prevent infinite loop
-    )
   }
 
   private fun applyPitchCorrection(playbackParameters: PlaybackParameters): PlaybackParameters {

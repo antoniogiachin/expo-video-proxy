@@ -13,7 +13,10 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import expo.modules.video.records.VideoSource
 import expo.modules.video.managers.VideoManager
+import expo.modules.video.player.DynamicHeadersDataSource
+import expo.modules.video.player.VideoPlayer
 import okhttp3.OkHttpClient
+import java.lang.ref.WeakReference
 
 @OptIn(UnstableApi::class)
 fun buildBaseDataSourceFactory(context: Context, videoSource: VideoSource): DataSource.Factory {
@@ -64,6 +67,34 @@ fun buildExpoVideoMediaSource(context: Context, videoSource: VideoSource): Media
   } else {
     buildBaseDataSourceFactory(context, videoSource)
   }
+  val mediaSourceFactory = buildMediaSourceFactory(context, dataSourceFactory)
+  val mediaItem = videoSource.toMediaItem(context)
+  return mediaSourceFactory.createMediaSource(mediaItem)
+}
+
+/**
+ * Builds a MediaSource with dynamic headers support.
+ * Headers from player.dynamicRequestHeaders will be added to each HTTP request.
+ */
+@OptIn(UnstableApi::class)
+fun buildExpoVideoMediaSourceWithDynamicHeaders(
+  context: Context,
+  videoSource: VideoSource,
+  player: VideoPlayer
+): MediaSource {
+  val baseFactory = buildOkHttpDataSourceFactory(context, videoSource)
+  val dynamicFactory = DynamicHeadersDataSource.Factory(baseFactory, WeakReference(player))
+
+  val dataSourceFactory = if (videoSource.useCaching) {
+    CacheDataSource.Factory().apply {
+      setCache(VideoManager.cache.instance)
+      setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+      setUpstreamDataSourceFactory(dynamicFactory)
+    }
+  } else {
+    dynamicFactory
+  }
+
   val mediaSourceFactory = buildMediaSourceFactory(context, dataSourceFactory)
   val mediaItem = videoSource.toMediaItem(context)
   return mediaSourceFactory.createMediaSource(mediaItem)
